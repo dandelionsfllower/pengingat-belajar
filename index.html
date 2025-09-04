@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aplikasi Pengingat Belajar</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .completed {
+            text-decoration: line-through;
+            opacity: 0.6;
+        }
+        .notification-popup {
+            transition: transform 0.3s ease-in-out, opacity 0.3s ease-in-out;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white antialiased">
+
+    <div class="container mx-auto p-4 md:p-8 max-w-2xl">
+        <header class="text-center mb-8">
+            <h1 class="text-3xl md:text-4xl font-bold text-blue-400">Pengingat Belajar</h1>
+            <p class="text-gray-400 mt-2">Jangan lewatkan jadwal belajarmu!</p>
+        </header>
+
+        <main>
+            <!-- Form untuk menambah pengingat baru -->
+            <div class="bg-gray-800 p-6 rounded-xl shadow-lg mb-8">
+                <form id="reminder-form" class="grid grid-cols-1 md:grid-cols-2 gap-4 items-end">
+                    <div class="col-span-1 md:col-span-2">
+                        <label for="subject" class="block mb-2 text-sm font-medium text-gray-300">Materi / Mata Pelajaran</label>
+                        <input type="text" id="subject" placeholder="Contoh: Matematika Bab 5" class="w-full bg-gray-700 border border-gray-600 text-white rounded-lg p-2.5 focus:ring-blue-500 focus:border-blue-500" required>
+                    </div>
+                    <div>
+                        <label for="date" class="block mb-2 text-sm font-medium text-gray-300">Tanggal</label>
+                        <input type="date" id="date" class="w-full bg-gray-700 border border-gray-600 text-white rounded-lg p-2.5 focus:ring-blue-500 focus:border-blue-500" required>
+                    </div>
+                    <div>
+                        <label for="time" class="block mb-2 text-sm font-medium text-gray-300">Waktu</label>
+                        <input type="time" id="time" class="w-full bg-gray-700 border border-gray-600 text-white rounded-lg p-2.5 focus:ring-blue-500 focus:border-blue-500" required>
+                    </div>
+                    <div class="col-span-1 md:col-span-2">
+                        <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-4 rounded-lg transition-colors duration-300">
+                            Tambah Pengingat
+                        </button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Daftar pengingat -->
+            <div id="reminders-container">
+                <h2 class="text-2xl font-semibold mb-4 text-gray-200">Jadwal Belajar</h2>
+                <div id="reminders-list" class="space-y-4">
+                    <!-- Pengingat akan dimuat di sini oleh JavaScript -->
+                     <p id="loading-state" class="text-center text-gray-500">Memuat jadwal...</p>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Popup Notifikasi -->
+    <div id="notification-popup" class="notification-popup fixed bottom-5 right-5 bg-green-500 text-white p-4 rounded-lg shadow-xl transform translate-x-[120%] opacity-0">
+        <p class="font-bold">Waktunya Belajar!</p>
+        <p id="notification-subject"></p>
+    </div>
+
+    <script type="module">
+        // Impor fungsi yang diperlukan dari Firebase SDK
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, deleteDoc, query, where, Timestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Konfigurasi Firebase (akan disediakan oleh environment)
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : { apiKey: "DEMO", authDomain: "DEMO", projectId: "DEMO" };
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-study-reminder';
+        
+        // Inisialisasi Firebase
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+
+        // Referensi DOM
+        const form = document.getElementById('reminder-form');
+        const subjectInput = document.getElementById('subject');
+        const dateInput = document.getElementById('date');
+        const timeInput = document.getElementById('time');
+        const remindersList = document.getElementById('reminders-list');
+        const loadingState = document.getElementById('loading-state');
+        const notificationPopup = document.getElementById('notification-popup');
+        const notificationSubject = document.getElementById('notification-subject');
+
+        let currentUserId = null;
+        let reminders = []; // Array lokal untuk menyimpan data pengingat
+
+        // Fungsi untuk menampilkan notifikasi
+        function showNotification(subject) {
+            notificationSubject.textContent = subject;
+            notificationPopup.classList.remove('translate-x-[120%]', 'opacity-0');
+            notificationPopup.classList.add('translate-x-0', 'opacity-100');
+            setTimeout(() => {
+                notificationPopup.classList.add('translate-x-[120%]', 'opacity-0');
+                notificationPopup.classList.remove('translate-x-0', 'opacity-100');
+            }, 5000);
+        }
+
+        // Fungsi untuk memeriksa pengingat
+        function checkReminders() {
+            const now = new Date();
+            reminders.forEach(async reminder => {
+                if (!reminder.completed && !reminder.notified) {
+                    const reminderTime = reminder.datetime.toDate();
+                    if (now >= reminderTime) {
+                        showNotification(reminder.subject);
+                        // Tandai sebagai ternotifikasi di Firestore agar tidak muncul lagi
+                        const reminderRef = doc(db, `/artifacts/${appId}/users/${currentUserId}/reminders`, reminder.id);
+                        await updateDoc(reminderRef, { notified: true });
+                    }
+                }
+            });
+        }
+
+        // Jalankan pemeriksaan pengingat setiap 30 detik
+        setInterval(checkReminders, 30000);
+
+        // Fungsi untuk merender pengingat ke DOM
+        function renderReminders(docs) {
+            remindersList.innerHTML = '';
+            reminders = []; // Kosongkan array lokal
+            
+            if (docs.length === 0) {
+                 remindersList.innerHTML = `<p class="text-center text-gray-500">Belum ada jadwal belajar. Ayo tambahkan!</p>`;
+                 loadingState.style.display = 'none';
+                 return;
+            }
+
+            // Urutkan pengingat berdasarkan tanggal (terbaru di atas)
+            docs.sort((a, b) => b.data().datetime.toMillis() - a.data().datetime.toMillis());
+
+            docs.forEach(docSnap => {
+                const data = docSnap.data();
+                reminders.push({ id: docSnap.id, ...data }); // Simpan ke array lokal
+                
+                const reminderEl = document.createElement('div');
+                reminderEl.className = `bg-gray-800 p-4 rounded-lg flex justify-between items-center transition-opacity duration-300 ${data.completed ? 'completed' : ''}`;
+                reminderEl.setAttribute('data-id', docSnap.id);
+
+                const datetime = data.datetime.toDate();
+                const formattedDate = datetime.toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+                const formattedTime = datetime.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+
+                reminderEl.innerHTML = `
+                    <div>
+                        <p class="font-semibold text-lg text-blue-300">${data.subject}</p>
+                        <p class="text-sm text-gray-400">${formattedDate} - ${formattedTime}</p>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <button class="toggle-complete-btn p-2 rounded-full hover:bg-green-800 transition-colors" title="Tandai Selesai">
+                           <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 ${data.completed ? 'text-green-400' : 'text-gray-400'}" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                           </svg>
+                        </button>
+                        <button class="delete-btn p-2 rounded-full hover:bg-red-800 transition-colors" title="Hapus">
+                           <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                           </svg>
+                        </button>
+                    </div>
+                `;
+                remindersList.appendChild(reminderEl);
+            });
+            loadingState.style.display = 'none';
+        }
+
+        // Listener untuk otentikasi
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                currentUserId = user.uid;
+                const remindersCollectionRef = collection(db, `/artifacts/${appId}/users/${currentUserId}/reminders`);
+                const q = query(remindersCollectionRef);
+                
+                // Menggunakan onSnapshot untuk real-time update
+                onSnapshot(q, (querySnapshot) => {
+                    renderReminders(querySnapshot.docs);
+                    checkReminders(); // Periksa pengingat saat data dimuat pertama kali
+                }, (error) => {
+                    console.error("Error getting reminders: ", error);
+                    remindersList.innerHTML = `<p class="text-center text-red-500">Gagal memuat data. Silakan coba lagi nanti.</p>`;
+                });
+            } else {
+                 remindersList.innerHTML = `<p class="text-center text-gray-500">Silakan login untuk melihat jadwal.</p>`;
+                 loadingState.style.display = 'none';
+                 currentUserId = null;
+            }
+        });
+        
+        // Handle login
+        (async () => {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error("Authentication failed:", error);
+                loadingState.textContent = "Gagal melakukan otentikasi.";
+            }
+        })();
+
+        // Event listener untuk menambah pengingat
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (!subjectInput.value || !dateInput.value || !timeInput.value || !currentUserId) {
+                return;
+            }
+
+            const combinedDateTime = new Date(`${dateInput.value}T${timeInput.value}`);
+            const firestoreTimestamp = Timestamp.fromDate(combinedDateTime);
+
+            try {
+                await addDoc(collection(db, `/artifacts/${appId}/users/${currentUserId}/reminders`), {
+                    subject: subjectInput.value,
+                    datetime: firestoreTimestamp,
+                    completed: false,
+                    notified: false,
+                    createdAt: Timestamp.now()
+                });
+                form.reset();
+            } catch (error) {
+                console.error("Error adding document: ", error);
+            }
+        });
+
+        // Event delegation untuk tombol complete dan delete
+        remindersList.addEventListener('click', async (e) => {
+            const target = e.target.closest('button');
+            if (!target || !currentUserId) return;
+
+            const reminderEl = target.closest('[data-id]');
+            const docId = reminderEl.dataset.id;
+            const reminderRef = doc(db, `/artifacts/${appId}/users/${currentUserId}/reminders`, docId);
+
+            if (target.classList.contains('toggle-complete-btn')) {
+                const isCompleted = reminderEl.classList.contains('completed');
+                await updateDoc(reminderRef, { completed: !isCompleted });
+            }
+
+            if (target.classList.contains('delete-btn')) {
+                await deleteDoc(reminderRef);
+            }
+        });
+    </script>
+</body>
+</html>
